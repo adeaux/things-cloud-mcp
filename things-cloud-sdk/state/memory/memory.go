@@ -3,6 +3,7 @@ package memory
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	// "fmt"
 	"sort"
 
@@ -304,7 +305,7 @@ func (s *State) Update(items ...things.Item) error {
 		}
 		var target any
 		switch rawItem.Kind {
-		case things.ItemKindTask, things.ItemKindTask4, things.ItemKindTask3, things.ItemKindTaskPlain:
+		case things.ItemKindTask, things.ItemKindTask7, things.ItemKindTask4, things.ItemKindTask3, things.ItemKindTaskPlain:
 			target = &things.TaskActionItemPayload{}
 		case things.ItemKindChecklistItem, things.ItemKindChecklistItem2, things.ItemKindChecklistItem3:
 			target = &things.CheckListActionItemPayload{}
@@ -315,7 +316,17 @@ func (s *State) Update(items ...things.Item) error {
 		case things.ItemKindTombstone, things.ItemKindTombstonePlain:
 			target = &things.TombstoneActionItemPayload{}
 		default:
-			return fmt.Errorf("item %s has unsupported kind %q", rawItem.UUID, rawItem.Kind)
+			// Things writes entities that have no user-visible representation
+			// (e.g. "Command"). Aborting on those takes down every read for an
+			// object the user cannot see, find, or delete, so they are skipped.
+			//
+			// Unknown members of the Task family are the opposite case: silently
+			// skipping one would hide a real to-do and leave state quietly
+			// incomplete, which is worse than a loud stop. Those still abort.
+			if strings.HasPrefix(string(rawItem.Kind), "Task") {
+				return fmt.Errorf("item %s has unsupported task kind %q", rawItem.UUID, rawItem.Kind)
+			}
+			continue
 		}
 		if err := json.Unmarshal(rawItem.P, target); err != nil {
 			return fmt.Errorf("decode item %s (%s): %w", rawItem.UUID, rawItem.Kind, err)
@@ -331,7 +342,7 @@ func (s *State) Update(items ...things.Item) error {
 			rawItem.UUID = things.EncodeLegacyIdentifier(rawItem.UUID)
 		}
 		switch rawItem.Kind {
-		case things.ItemKindTask, things.ItemKindTask4, things.ItemKindTask3, things.ItemKindTaskPlain:
+		case things.ItemKindTask, things.ItemKindTask7, things.ItemKindTask4, things.ItemKindTask3, things.ItemKindTaskPlain:
 			item := things.TaskActionItem{Item: rawItem}
 			_ = json.Unmarshal(rawItem.P, &item.P)
 			if legacy {

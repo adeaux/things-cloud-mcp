@@ -12,7 +12,6 @@ import (
 	"hash/crc32"
 	"hash/fnv"
 	"log"
-	"math/big"
 	"net/http"
 	"net/url"
 	"os"
@@ -173,21 +172,15 @@ func defaultExtension() WireExtension {
 	return WireExtension{Sn: map[string]any{}, TypeTag: "oo"}
 }
 
+// generateUUID mints a canonical Base58 Things identifier.
+//
+// This previously hand-rolled the encoding and dropped leading zero bytes:
+// a UUID beginning 0x00 (~1 in 256) encoded one character short, with no
+// leading "1" standing in for it. Things.app crashes decoding such an
+// identifier and the resulting item can never be removed. The SDK encoder
+// pads correctly, so defer to it rather than keeping a second copy.
 func generateUUID() string {
-	u := uuid.New()
-	const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-	n := new(big.Int).SetBytes(u[:])
-	base := big.NewInt(58)
-	mod := new(big.Int)
-	var encoded []byte
-	for n.Sign() > 0 {
-		n.DivMod(n, base, mod)
-		encoded = append(encoded, alphabet[mod.Int64()])
-	}
-	for i, j := 0, len(encoded)-1; i < j; i, j = i+1, j-1 {
-		encoded[i], encoded[j] = encoded[j], encoded[i]
-	}
-	return string(encoded)
+	return thingscloud.NewUUID()
 }
 
 func nowTs() float64 {

@@ -495,16 +495,48 @@ func TestStateUpdateRejectsMalformedKnownItem(t *testing.T) {
 	}
 }
 
-func TestStateUpdateRejectsUnknownKind(t *testing.T) {
+func TestStateUpdateSkipsUnknownNonTaskKind(t *testing.T) {
+	// Things writes entities with no user-visible representation, such as
+	// "Command". The user cannot see, find, or delete them, so aborting the
+	// rebuild on one takes down every read for an object they cannot fix.
 	s := NewState()
-	err := s.Update(things.Item{
-		UUID:   "future-item",
-		Kind:   things.ItemKind("Task7"),
+	if err := s.Update(things.Item{
+		UUID:   "command-item",
+		Kind:   things.ItemKind("Command"),
 		Action: things.ItemActionCreated,
 		P:      []byte(`{}`),
-	})
-	if err == nil {
-		t.Fatal("expected unknown kind error")
+	}); err != nil {
+		t.Fatalf("unknown non-task kind should be skipped, got %v", err)
+	}
+}
+
+func TestStateUpdateRejectsUnknownTaskKind(t *testing.T) {
+	// A future Task kind is a real to-do. Skipping it would hide user data
+	// behind a successful-looking read, so decoding must stop loudly.
+	s := NewState()
+	if err := s.Update(things.Item{
+		UUID:   "future-task",
+		Kind:   things.ItemKind("Task8"),
+		Action: things.ItemActionCreated,
+		P:      []byte(`{}`),
+	}); err == nil {
+		t.Fatal("expected unsupported task kind error")
+	}
+}
+
+func TestStateUpdateAcceptsTask7(t *testing.T) {
+	// Things 3.23+ writes Task7 for repetition templates created in the app.
+	s := NewState()
+	if err := s.Update(things.Item{
+		UUID:   "task7-item",
+		Kind:   things.ItemKindTask7,
+		Action: things.ItemActionCreated,
+		P:      []byte(`{"tt":"repeating"}`),
+	}); err != nil {
+		t.Fatalf("Task7 should decode as a task, got %v", err)
+	}
+	if _, ok := s.Tasks["task7-item"]; !ok {
+		t.Fatal("Task7 item did not reach task state")
 	}
 }
 

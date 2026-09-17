@@ -78,3 +78,20 @@ Base58 identifiers, in which every leading zero byte of the underlying UUID is
 represented by a leading `1`. An encoder that drops them emits a short identifier for
 roughly one UUID in 256; Things.app crashes decoding such a record and it can never be
 removed. Do not hand-roll this encoding.
+
+## Restricting access on a self-hosted instance
+
+The OAuth flow lets any caller supply their own Things Cloud credentials, which is
+correct for the multi-tenant hosted deployment but wrong for a personal one: anyone
+who finds the hostname could have your machine sync their account and store their
+encrypted credentials on your disk.
+
+Set `ALLOWED_EMAILS` to a comma-separated list of the accounts permitted to sign in:
+
+```
+ALLOWED_EMAILS="you@example.com"
+```
+
+Matching is case-insensitive and applies to both the OAuth and Basic auth paths.
+Leaving it unset keeps the previous unrestricted behaviour and logs a warning at
+startup.

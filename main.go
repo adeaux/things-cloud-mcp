@@ -1052,9 +1052,43 @@ func sameCredential(a, b [sha256.Size]byte) bool {
 	return subtle.ConstantTimeCompare(a[:], b[:]) == 1
 }
 
+// allowedEmails is the set of accounts permitted to use this instance, parsed
+// once from ALLOWED_EMAILS (comma-separated, case-insensitive).
+//
+// Unset means unrestricted, which suits the multi-tenant hosted deployment this
+// server was written for. A self-hosted instance on a personal machine must set
+// it: the OAuth flow lets any caller supply their own Things Cloud credentials,
+// so without an allowlist anyone who finds the hostname can have this server
+// sync their account and store their encrypted credentials on this disk.
+var allowedEmails = parseAllowedEmails(os.Getenv("ALLOWED_EMAILS"))
+
+func parseAllowedEmails(raw string) map[string]struct{} {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	set := map[string]struct{}{}
+	for _, e := range strings.Split(raw, ",") {
+		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
+			set[e] = struct{}{}
+		}
+	}
+	return set
+}
+
+func emailAllowed(key string) bool {
+	if allowedEmails == nil {
+		return true
+	}
+	_, ok := allowedEmails[key]
+	return ok
+}
+
 func (um *UserManager) GetOrCreateUser(email, password string) (*ThingsMCP, error) {
 	email = strings.TrimSpace(email)
 	key := strings.ToLower(email)
+	if !emailAllowed(key) {
+		return nil, fmt.Errorf("account not permitted on this instance")
+	}
 	digest := credentialDigest(key, password)
 	um.mu.RLock()
 	if t, ok := um.users[key]; ok {
@@ -4495,6 +4529,11 @@ func main() {
 	log.SetPrefix("[things-mcp] ")
 	proxyURLs := parseProxyURLs(os.Getenv("PROXY_URLS"))
 	log.Printf("Loaded %d proxy URLs", len(proxyURLs))
+	if allowedEmails == nil {
+		log.Printf("WARNING: ALLOWED_EMAILS is unset - any account may sign in to this instance")
+	} else {
+		log.Printf("Access restricted to %d allow-listed account(s)", len(allowedEmails))
+	}
 
 	um := NewUserManager()
 	um.proxyURLs = proxyURLs

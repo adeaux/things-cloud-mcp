@@ -1200,7 +1200,9 @@ func getUserFromContext(ctx context.Context, um *UserManager) (*ThingsMCP, error
 
 // fullRebuild fetches all items into isolated cursor/state candidates and swaps
 // them in only after the complete history has been decoded successfully. It is
-// used only for initial construction, never as an automatic error fallback.
+// used for initial construction and, as the single exception to "never an
+// automatic error fallback", when Things Cloud resets the history underneath
+// the local cursor (see historyWasReset).
 func (t *ThingsMCP) fullRebuild() error {
 	candidateHistory := t.client.HistoryWithID(t.history.ID)
 	startIndex := 0
@@ -1310,10 +1312,45 @@ func (t *ThingsMCP) syncAndRebuild() error {
 
 	// Single-pass: Items() both checks for updates and returns them
 	_, err := t.incrementalSync()
+	if err != nil {
+		if head, reset := t.historyWasReset(err); reset {
+			log.Printf("History %s was reset server-side (head %d is below local cursor %d); doing a full rebuild",
+				t.history.ID, head, t.history.LoadedServerIndex)
+			if rerr := t.fullRebuild(); rerr != nil {
+				return fmt.Errorf("%v; full rebuild after history reset: %w", err, rerr)
+			}
+			err = nil
+		}
+	}
 	if err == nil {
 		t.lastSyncAt = time.Now()
 	}
 	return err
+}
+
+// historyWasReset reports whether an incremental sync failure was caused by
+// Things Cloud resetting the history underneath the local cursor. Incremental
+// failures deliberately never fall back to a full rebuild, because a transient
+// error must not silently replace state. A reset is the one exception: the
+// saved cursor points past the server's own head, so no incremental request
+// can ever succeed again and only a rebuild from index 0 recovers.
+//
+// Both conditions must hold: the fetch failed with 404, and the history's
+// current head, fetched fresh, is below LoadedServerIndex.
+func (t *ThingsMCP) historyWasReset(syncErr error) (int, bool) {
+	var apiErr *thingscloud.APIError
+	if !errors.As(syncErr, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		return 0, false
+	}
+	meta, err := t.client.History(t.history.ID)
+	if err != nil {
+		log.Printf("History reset check for %s failed: %v", t.history.ID, err)
+		return 0, false
+	}
+	if meta.LatestServerIndex >= t.history.LoadedServerIndex {
+		return meta.LatestServerIndex, false
+	}
+	return meta.LatestServerIndex, true
 }
 
 func (t *ThingsMCP) writeAndSync(items ...thingscloud.Identifiable) error {

@@ -24,7 +24,7 @@ go build -o things-mcp .
 ./things-mcp
 ```
 
-The server listens on port 8080 by default (set `PORT` to override). Optionally set `JWT_SECRET` for stable tokens across restarts. Things passwords stored for OAuth are encrypted with AES-GCM; set a durable high-entropy `CREDENTIALS_SECRET`, or persist the generated `DATA_DIR/credentials.key` alongside `oauth.db`. Refresh tokens are stored as hashes.
+The server listens on port 8080 on all interfaces by default (set `PORT` to override, and `HOST` to bind one interface, e.g. `HOST=127.0.0.1` behind a reverse proxy or tunnel). Optionally set `JWT_SECRET` for stable tokens across restarts. Things passwords stored for OAuth are encrypted with AES-GCM; set a durable high-entropy `CREDENTIALS_SECRET`, or persist the generated `DATA_DIR/credentials.key` alongside `oauth.db`. Refresh tokens are stored as hashes.
 
 - OAuth clients (Claude.ai, ChatGPT) authenticate via the built-in OAuth 2.1 flow
 - CLI clients (Claude Code, Cursor, Windsurf) use Basic auth headers
@@ -51,3 +51,47 @@ This project writes through a reverse-engineered, unofficial Things Cloud protoc
 Your endpoint will normally be `https://<app-name>.fly.dev`; verify current Fly configuration and pricing before deployment.
 
 Built with [things-cloud-sdk](https://github.com/arthursoares/things-cloud-sdk) and [mcp-go](https://github.com/mark3labs/mcp-go).
+
+## Unrecognised item kinds
+
+Things Cloud histories contain entities this server does not model. They fall into
+two groups, and the state rebuild treats them differently on purpose.
+
+**Non-task entities are skipped.** Things writes records such as `Command` and
+`Command3` that have no representation in the app: the user cannot see, find or
+delete them. Aborting a rebuild on one takes down every read, including the
+`things_diagnose` and `things_debug_raw` tools needed to investigate, for an object
+nobody can repair. These are ignored.
+
+**Unknown members of the Task family abort.** A kind matching `Task<digits>` that the
+SDK does not enumerate is a real to-do. Skipping it would hide user data behind a read
+that looks healthy, so decoding stops loudly instead. `Task7`, which Things 3.23+ writes
+for repetition templates created in the app, is enumerated and parses as an ordinary
+task.
+
+See [issue #23](https://github.com/wbopan/things-cloud-mcp/issues/23).
+
+## Identifiers
+
+New items are minted with the SDK's `thingscloud.NewUUID()`. Things requires canonical
+Base58 identifiers, in which every leading zero byte of the underlying UUID is
+represented by a leading `1`. An encoder that drops them emits a short identifier for
+roughly one UUID in 256; Things.app crashes decoding such a record and it can never be
+removed. Do not hand-roll this encoding.
+
+## Restricting access on a self-hosted instance
+
+The OAuth flow lets any caller supply their own Things Cloud credentials, which is
+correct for the multi-tenant hosted deployment but wrong for a personal one: anyone
+who finds the hostname could have your machine sync their account and store their
+encrypted credentials on your disk.
+
+Set `ALLOWED_EMAILS` to a comma-separated list of the accounts permitted to sign in:
+
+```
+ALLOWED_EMAILS="you@example.com"
+```
+
+Matching is case-insensitive and applies to both the OAuth and Basic auth paths.
+Leaving it unset keeps the previous unrestricted behaviour and logs a warning at
+startup.

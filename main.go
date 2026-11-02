@@ -12,7 +12,7 @@ import (
 	"hash/crc32"
 	"hash/fnv"
 	"log"
-	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -173,21 +173,15 @@ func defaultExtension() WireExtension {
 	return WireExtension{Sn: map[string]any{}, TypeTag: "oo"}
 }
 
+// generateUUID mints a canonical Base58 Things identifier.
+//
+// This previously hand-rolled the encoding and dropped leading zero bytes:
+// a UUID beginning 0x00 (~1 in 256) encoded one character short, with no
+// leading "1" standing in for it. Things.app crashes decoding such an
+// identifier and the resulting item can never be removed. The SDK encoder
+// pads correctly, so defer to it rather than keeping a second copy.
 func generateUUID() string {
-	u := uuid.New()
-	const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-	n := new(big.Int).SetBytes(u[:])
-	base := big.NewInt(58)
-	mod := new(big.Int)
-	var encoded []byte
-	for n.Sign() > 0 {
-		n.DivMod(n, base, mod)
-		encoded = append(encoded, alphabet[mod.Int64()])
-	}
-	for i, j := 0, len(encoded)-1; i < j; i, j = i+1, j-1 {
-		encoded[i], encoded[j] = encoded[j], encoded[i]
-	}
-	return string(encoded)
+	return thingscloud.NewUUID()
 }
 
 func nowTs() float64 {
@@ -1059,9 +1053,43 @@ func sameCredential(a, b [sha256.Size]byte) bool {
 	return subtle.ConstantTimeCompare(a[:], b[:]) == 1
 }
 
+// allowedEmails is the set of accounts permitted to use this instance, parsed
+// once from ALLOWED_EMAILS (comma-separated, case-insensitive).
+//
+// Unset means unrestricted, which suits the multi-tenant hosted deployment this
+// server was written for. A self-hosted instance on a personal machine must set
+// it: the OAuth flow lets any caller supply their own Things Cloud credentials,
+// so without an allowlist anyone who finds the hostname can have this server
+// sync their account and store their encrypted credentials on this disk.
+var allowedEmails = parseAllowedEmails(os.Getenv("ALLOWED_EMAILS"))
+
+func parseAllowedEmails(raw string) map[string]struct{} {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	set := map[string]struct{}{}
+	for _, e := range strings.Split(raw, ",") {
+		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
+			set[e] = struct{}{}
+		}
+	}
+	return set
+}
+
+func emailAllowed(key string) bool {
+	if allowedEmails == nil {
+		return true
+	}
+	_, ok := allowedEmails[key]
+	return ok
+}
+
 func (um *UserManager) GetOrCreateUser(email, password string) (*ThingsMCP, error) {
 	email = strings.TrimSpace(email)
 	key := strings.ToLower(email)
+	if !emailAllowed(key) {
+		return nil, fmt.Errorf("account not permitted on this instance")
+	}
 	digest := credentialDigest(key, password)
 	um.mu.RLock()
 	if t, ok := um.users[key]; ok {
@@ -1173,7 +1201,9 @@ func getUserFromContext(ctx context.Context, um *UserManager) (*ThingsMCP, error
 
 // fullRebuild fetches all items into isolated cursor/state candidates and swaps
 // them in only after the complete history has been decoded successfully. It is
-// used only for initial construction, never as an automatic error fallback.
+// used for initial construction and, as the single exception to "never an
+// automatic error fallback", when Things Cloud resets the history underneath
+// the local cursor (see historyWasReset).
 func (t *ThingsMCP) fullRebuild() error {
 	candidateHistory := t.client.HistoryWithID(t.history.ID)
 	startIndex := 0
@@ -1283,10 +1313,45 @@ func (t *ThingsMCP) syncAndRebuild() error {
 
 	// Single-pass: Items() both checks for updates and returns them
 	_, err := t.incrementalSync()
+	if err != nil {
+		if head, reset := t.historyWasReset(err); reset {
+			log.Printf("History %s was reset server-side (head %d is below local cursor %d); doing a full rebuild",
+				t.history.ID, head, t.history.LoadedServerIndex)
+			if rerr := t.fullRebuild(); rerr != nil {
+				return fmt.Errorf("%v; full rebuild after history reset: %w", err, rerr)
+			}
+			err = nil
+		}
+	}
 	if err == nil {
 		t.lastSyncAt = time.Now()
 	}
 	return err
+}
+
+// historyWasReset reports whether an incremental sync failure was caused by
+// Things Cloud resetting the history underneath the local cursor. Incremental
+// failures deliberately never fall back to a full rebuild, because a transient
+// error must not silently replace state. A reset is the one exception: the
+// saved cursor points past the server's own head, so no incremental request
+// can ever succeed again and only a rebuild from index 0 recovers.
+//
+// Both conditions must hold: the fetch failed with 404, and the history's
+// current head, fetched fresh, is below LoadedServerIndex.
+func (t *ThingsMCP) historyWasReset(syncErr error) (int, bool) {
+	var apiErr *thingscloud.APIError
+	if !errors.As(syncErr, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		return 0, false
+	}
+	meta, err := t.client.History(t.history.ID)
+	if err != nil {
+		log.Printf("History reset check for %s failed: %v", t.history.ID, err)
+		return 0, false
+	}
+	if meta.LatestServerIndex >= t.history.LoadedServerIndex {
+		return meta.LatestServerIndex, false
+	}
+	return meta.LatestServerIndex, true
 }
 
 func (t *ThingsMCP) writeAndSync(items ...thingscloud.Identifiable) error {
@@ -4502,6 +4567,11 @@ func main() {
 	log.SetPrefix("[things-mcp] ")
 	proxyURLs := parseProxyURLs(os.Getenv("PROXY_URLS"))
 	log.Printf("Loaded %d proxy URLs", len(proxyURLs))
+	if allowedEmails == nil {
+		log.Printf("WARNING: ALLOWED_EMAILS is unset - any account may sign in to this instance")
+	} else {
+		log.Printf("Access restricted to %d allow-listed account(s)", len(allowedEmails))
+	}
 
 	um := NewUserManager()
 	um.proxyURLs = proxyURLs
@@ -4546,7 +4616,15 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	addr := ":" + port
+	// HOST limits the listener to one interface (e.g. 127.0.0.1 behind a tunnel).
+	// Unset keeps the default of listening on all interfaces.
+	host := os.Getenv("HOST")
+	addr := net.JoinHostPort(host, port)
+	localHost := host
+	if localHost == "" {
+		localHost = "localhost"
+	}
+	localURL := "http://" + net.JoinHostPort(localHost, port)
 
 	// Use a custom mux so we can serve both the landing page and MCP endpoint
 	mux := http.NewServeMux()
@@ -4631,9 +4709,9 @@ func main() {
 	}
 
 	log.Printf("Things Cloud MCP server listening on %s", addr)
-	log.Printf("  Landing page: http://localhost%s/", addr)
-	log.Printf("  MCP endpoint: http://localhost%s/mcp", addr)
-	log.Printf("  OAuth metadata: http://localhost%s/.well-known/oauth-authorization-server", addr)
+	log.Printf("  Landing page: %s/", localURL)
+	log.Printf("  MCP endpoint: %s/mcp", localURL)
+	log.Printf("  OAuth metadata: %s/.well-known/oauth-authorization-server", localURL)
 	if err := httpServer.ListenAndServe(); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}

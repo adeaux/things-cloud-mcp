@@ -16,6 +16,7 @@ Run the same four checks in `things-cloud-sdk/` after SDK changes. The server de
 Environment variables:
 
 - `PORT`: HTTP port.
+- `HOST`: bind address (default all interfaces); set `127.0.0.1` behind a reverse proxy or tunnel.
 - `DATA_DIR`: SQLite and credential-key directory (default `data/`).
 - `JWT_SECRET`: base64 JWT signing key; generated when absent.
 - `CREDENTIALS_SECRET`: durable high-entropy secret used to derive the AES key for Things passwords at rest. When absent, the server creates `DATA_DIR/credentials.key` with mode `0600`.

@@ -12,6 +12,7 @@ import (
 	"hash/crc32"
 	"hash/fnv"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -4615,7 +4616,15 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	addr := ":" + port
+	// HOST limits the listener to one interface (e.g. 127.0.0.1 behind a tunnel).
+	// Unset keeps the default of listening on all interfaces.
+	host := os.Getenv("HOST")
+	addr := net.JoinHostPort(host, port)
+	localHost := host
+	if localHost == "" {
+		localHost = "localhost"
+	}
+	localURL := "http://" + net.JoinHostPort(localHost, port)
 
 	// Use a custom mux so we can serve both the landing page and MCP endpoint
 	mux := http.NewServeMux()
@@ -4700,9 +4709,9 @@ func main() {
 	}
 
 	log.Printf("Things Cloud MCP server listening on %s", addr)
-	log.Printf("  Landing page: http://localhost%s/", addr)
-	log.Printf("  MCP endpoint: http://localhost%s/mcp", addr)
-	log.Printf("  OAuth metadata: http://localhost%s/.well-known/oauth-authorization-server", addr)
+	log.Printf("  Landing page: %s/", localURL)
+	log.Printf("  MCP endpoint: %s/mcp", localURL)
+	log.Printf("  OAuth metadata: %s/.well-known/oauth-authorization-server", localURL)
 	if err := httpServer.ListenAndServe(); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}

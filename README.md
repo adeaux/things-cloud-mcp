@@ -24,7 +24,7 @@ go build -o things-mcp .
 ./things-mcp
 ```
 
-The server listens on port 8080 by default (set `PORT` to override). Optionally set `JWT_SECRET` for stable tokens across restarts. Things passwords stored for OAuth are encrypted with AES-GCM; set a durable high-entropy `CREDENTIALS_SECRET`, or persist the generated `DATA_DIR/credentials.key` alongside `oauth.db`. Refresh tokens are stored as hashes.
+The server listens on port 8080 on all interfaces by default (set `PORT` to override, and `HOST` to bind one interface, e.g. `HOST=127.0.0.1` behind a reverse proxy or tunnel). Optionally set `JWT_SECRET` for stable tokens across restarts. Things passwords stored for OAuth are encrypted with AES-GCM; set a durable high-entropy `CREDENTIALS_SECRET`, or persist the generated `DATA_DIR/credentials.key` alongside `oauth.db`. Refresh tokens are stored as hashes.
 
 - OAuth clients (Claude.ai, ChatGPT) authenticate via the built-in OAuth 2.1 flow
 - CLI clients (Claude Code, Cursor, Windsurf) use Basic auth headers
